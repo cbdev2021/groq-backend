@@ -4,7 +4,7 @@ const https = require('https');
 const { connectDB, ChatSession } = require('./mongo');
 
 const app = express();
-const PORT = process.env.PORT || 3001;
+const PORT = process.env.PORT || 10000;
 const GROQ_API_KEY = process.env.GROQ_API_KEY;
 const TIMEOUT_MS = 30000;
 

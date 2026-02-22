@@ -28,7 +28,7 @@ copy .env.example .env
 npm start
 ```
 
-El servidor estará disponible en: `http://localhost:3001`
+El servidor estará disponible en: `http://localhost:10000`
 
 ---
 
@@ -81,21 +81,21 @@ Health check del servidor.
 
 ### cURL (Windows CMD)
 ```bash
-curl -X POST http://localhost:3001/chat ^
+curl -X POST http://localhost:10000/chat ^
   -H "Content-Type: application/json" ^
   -d "{\"sessionId\":\"test123\",\"message\":\"Hola, explica qué es Node.js en 2 líneas\"}"
 ```
 
 ### cURL (PowerShell)
 ```powershell
-curl -Method POST -Uri "http://localhost:3001/chat" `
+curl -Method POST -Uri "http://localhost:10000/chat" `
   -Headers @{"Content-Type"="application/json"} `
   -Body '{"sessionId":"test123","message":"Hola, explica qué es Node.js en 2 líneas"}'
 ```
 
 ### cURL (Linux/Mac)
 ```bash
-curl -X POST http://localhost:3001/chat \
+curl -X POST http://localhost:10000/chat \
   -H "Content-Type: application/json" \
   -d '{"sessionId":"test123","message":"Hola, explica qué es Node.js en 2 líneas"}'
 ```
@@ -106,7 +106,7 @@ curl -X POST http://localhost:3001/chat \
 
 ### Configuración
 1. **Method**: POST
-2. **URL**: `http://localhost:3001/chat`
+2. **URL**: `http://localhost:10000/chat`
 3. **Headers**:
    - `Content-Type`: `application/json`
 4. **Body** (raw JSON):
@@ -172,7 +172,7 @@ groq/
 ## 🚢 Despliegue
 
 ### Variables de entorno requeridas:
-- `PORT`: Puerto del servidor (default: 3001)
+- `PORT`: Puerto del servidor (default: 10000)
 - `GROQ_API_KEY`: API key de Groq
 - `MONGO_URI`: URI de MongoDB
 
