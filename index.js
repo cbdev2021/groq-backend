@@ -8,6 +8,29 @@ const PORT = process.env.PORT || 10000;
 const GROQ_API_KEY = process.env.GROQ_API_KEY;
 const TIMEOUT_MS = 30000;
 
+// Lista de modelos gratis con fallback automático
+const DEFAULT_MODELS = [
+  'openai/gpt-oss-120b',
+  'openai/gpt-oss-20b',
+  'qwen/qwen3.6-27b',
+  'qwen/qwen3.8-27b',
+  'groq/compound-mini',
+  'groq/compound'
+];
+
+const GROQ_MODELS = process.env.GROQ_MODELS
+  ? process.env.GROQ_MODELS.split(',').map(s => s.trim()).filter(Boolean)
+  : DEFAULT_MODELS;
+
+// Instrucción de memoria: todos los modelos deben usar el historial del hilo como memoria
+const SYSTEM_PROMPT = process.env.SYSTEM_PROMPT || (
+  'Aquí tienes toda la conversación actual de este chat y es visible para ti. ' +
+  'Usa ese historial como tu memoria de la sesión. Si el usuario te ha dicho antes algo ' +
+  '(su nombre, una preferencia o un dato personal), recuérdalo y úsalo cuando te pregunte después. ' +
+  'Nunca digas que no recuerdas ni que cada conversación comienza de cero. ' +
+  'Responde en español de forma natural, clara y breve.'
+);
+
 // Middleware
 app.use(express.json());
 
@@ -23,19 +46,46 @@ if (!GROQ_API_KEY) {
   process.exit(1);
 }
 
+if (!GROQ_MODELS.length) {
+  console.error('ERROR: GROQ_MODELS no contiene modelos válidos');
+  process.exit(1);
+}
+
 // Conectar a MongoDB
 connectDB().catch(err => {
   console.error('ERROR: No se pudo conectar a MongoDB');
   process.exit(1);
 });
 
+function isRetryableError(status, message) {
+  // Key inválida o sin permisos: fallaría igual en todos los modelos → no reintentar
+  if (status === 401 || status === 403) return false;
+  // Rate limit (por modelo): conviene intentar el siguiente
+  if (status === 429) return true;
+  const lower = String(message).toLowerCase();
+  const modelIssue = lower.includes('model') && (
+    lower.includes('not found') ||
+    lower.includes('does not exist') ||
+    lower.includes('unknown model') ||
+    lower.includes('invalid model') ||
+    lower.includes('no access') ||
+    lower.includes('access to it') ||
+    lower.includes('retired') ||
+    lower.includes('decommissioned') ||
+    lower.includes('no longer')
+  );
+  if (status === 400) return modelIssue;
+  if (status === 404) return true;
+  return status >= 500;
+}
+
 // Función para llamar a Groq API con historial
-function callGroqAPI(messages) {
+function callGroqAPI(messages, modelId) {
   return new Promise((resolve, reject) => {
     const payload = JSON.stringify({
-      model: 'llama-3.3-70b-versatile',
+      model: modelId,
       messages: messages.map(msg => ({
-        role: msg.role === 'assistant' ? 'assistant' : 'user',
+        role: msg.role === 'assistant' ? 'assistant' : (msg.role === 'system' ? 'system' : 'user'),
         content: msg.content
       }))
     });
@@ -60,36 +110,84 @@ function callGroqAPI(messages) {
       });
 
       res.on('end', () => {
-        if (res.statusCode === 200) {
-          try {
-            const parsed = JSON.parse(data);
-            resolve(parsed);
-          } catch (err) {
-            reject({ status: 500, message: 'Error parseando respuesta de Groq' });
-          }
-        } else if (res.statusCode === 400) {
-          reject({ status: 400, message: 'Request inválido a Groq API' });
-        } else if (res.statusCode === 401 || res.statusCode === 403) {
-          reject({ status: 401, message: 'API key inválida o sin permisos' });
-        } else {
-          reject({ status: 500, message: `Groq API error: ${res.statusCode}` });
+        let body = {};
+        try {
+          body = JSON.parse(data);
+        } catch (err) {
+          body = {};
         }
+
+        if (res.statusCode === 200) {
+          resolve(body);
+          return;
+        }
+
+        const errorMsg = (body.error && body.error.message) || `Groq API error: ${res.statusCode}`;
+        const error = new Error(errorMsg);
+        error.status = res.statusCode;
+        error.body = data;
+        error.retryable = isRetryableError(res.statusCode, errorMsg);
+        reject(error);
       });
     });
 
     req.on('error', (err) => {
-      console.error('Error en request:', err.message);
-      reject({ status: 500, message: 'Error de conexión con Groq API' });
+      const error = new Error(`Error de conexión con Groq API: ${err.message}`);
+      error.status = 500;
+      error.retryable = true;
+      reject(error);
     });
 
     req.on('timeout', () => {
       req.destroy();
-      reject({ status: 504, message: 'Timeout en request a Groq API' });
+      const error = new Error('Timeout en request a Groq API');
+      error.status = 504;
+      error.retryable = true;
+      reject(error);
     });
 
     req.write(payload);
     req.end();
   });
+}
+
+// Intenta la lista de modelos en orden hasta conseguir respuesta
+async function callWithFallback(messages, startModel) {
+  let startIdx = GROQ_MODELS.indexOf(startModel);
+  if (startIdx === -1) startIdx = 0;
+
+  const attempts = [];
+
+  for (let i = 0; i < GROQ_MODELS.length; i++) {
+    const model = GROQ_MODELS[(startIdx + i) % GROQ_MODELS.length];
+
+    try {
+      const parsed = await callGroqAPI(messages, model);
+      const responseText = (parsed.choices && parsed.choices[0] && parsed.choices[0].message && parsed.choices[0].message.content) || '';
+
+      if (!responseText.trim()) {
+        throw new Error('Respuesta vacía del modelo');
+      }
+
+      if (i > 0) console.log(`[MODEL] ✅ switch exitoso a: ${model}`);
+      return { data: parsed, model };
+    } catch (err) {
+      attempts.push({ model, status: err.status || 500, message: err.message });
+      console.log(`[MODEL] ❌ ${model} falló (${err.status || 500}): ${err.message}`);
+
+      // Errores no reintentables (key inválida, input inválido) → no probar más modelos
+      if (err.retryable === false) break;
+      if (i < GROQ_MODELS.length - 1) {
+        console.log(`[MODEL] ↻ probando siguiente: ${GROQ_MODELS[(startIdx + i + 1) % GROQ_MODELS.length]}`);
+      }
+    }
+  }
+
+  const last = attempts[attempts.length - 1] || { status: 500, message: 'Error interno del servidor' };
+  const error = new Error(`Todos los modelos fallaron. Último error: ${last.message}`);
+  error.status = last.status;
+  error.details = attempts;
+  throw error;
 }
 
 // Endpoint principal
@@ -142,8 +240,13 @@ app.post('/chat', async (req, res) => {
       session.messages = session.messages.slice(-20);
     }
 
-    // Llamar a Groq API con historial completo
-    const groqResponse = await callGroqAPI(session.messages);
+    // Llamar a Groq API con fallback automático entre modelos
+    const startModel = session.activeModel || GROQ_MODELS[0];
+    const contextMessages = [
+      { role: 'system', content: SYSTEM_PROMPT },
+      ...session.messages
+    ];
+    const { data: groqResponse, model: usedModel } = await callWithFallback(contextMessages, startModel);
 
     // Extraer respuesta
     const responseText = groqResponse.choices?.[0]?.message?.content || '';
@@ -160,17 +263,19 @@ app.post('/chat', async (req, res) => {
       session.messages = session.messages.slice(-20);
     }
 
-    // Actualizar updatedAt y guardar
+    // Guardar modelo ganador para la próxima petición de esta sesión
+    session.activeModel = usedModel;
     session.updatedAt = new Date();
     await session.save();
 
-    console.log(`[RESPONSE] Success - ${responseText.length} chars, Total messages: ${session.messages.length}`);
+    console.log(`[RESPONSE] Success - model: ${usedModel}, ${responseText.length} chars, Total messages: ${session.messages.length}`);
 
     res.json({
       success: true,
       data: {
         text: responseText,
-        sessionId: sessionId
+        sessionId: sessionId,
+        model: usedModel
       },
       error: null,
       usage: usage ? {
@@ -226,4 +331,5 @@ app.listen(PORT, () => {
   console.log(`✅ Servidor corriendo en http://localhost:${PORT}`);
   console.log(`✅ API key configurada: ${GROQ_API_KEY.substring(0, 10)}...`);
   console.log(`📡 Endpoint: POST /chat`);
+  console.log(`🤖 Modelos (fallback automático): ${GROQ_MODELS.join(' → ')}`);
 });

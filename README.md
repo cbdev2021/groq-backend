@@ -1,6 +1,6 @@
 # Backend Groq API - Producción
 
-Backend profesional en Node.js + Express para consumir Groq (Llama 3.3 70B) vía API REST oficial.
+Backend profesional en Node.js + Express para consumir Groq (GPT-OSS 120B con fallback multi-modelo) vía API REST oficial.
 
 ## 🚀 Instalación
 
@@ -49,7 +49,11 @@ Envía un mensaje a Groq y recibe respuesta.
 ```json
 {
   "success": true,
-  "response": "Un agente de IA es un sistema...",
+  "data": {
+    "text": "Un agente de IA es un sistema...",
+    "sessionId": "user123",
+    "model": "openai/gpt-oss-120b"
+  },
   "usage": {
     "promptTokens": 10,
     "completionTokens": 45,
@@ -144,11 +148,17 @@ groq/
 
 ---
 
-## 📊 Modelo
+## 📊 Modelos
 
-- **Modelo**: `llama-3.3-70b-versatile`
-- **Proveedor**: Groq
+- **Fallback automático** (en orden): `openai/gpt-oss-120b` → `openai/gpt-oss-20b` → `qwen/qwen3.6-27b` → `qwen/qwen3.8-27b` → `groq/compound-mini` → `groq/compound`
+- **Provider**: Groq
 - **Contexto**: Mantiene historial de conversación (últimos 20 mensajes)
+- **Memoria**: se inyecta un `system prompt` para que todos los modelos usen el historial del hilo como memoria (nombres, preferencias, datos). El historial vive en MongoDB, por lo que se conserva incluso cuando el fallback cambia de modelo a mitad de conversación
+- **Auto-switch por límite**: cuando un modelo llega a su límite gratis (HTTP 429) o falla, se prueba automáticamente el siguiente de la lista
+- El modelo activo de cada sesión se guarda (`activeModel`) para no golpear el modelo saturado en cada petición
+- Cada respuesta incluye el campo `data.model` indicando qué modelo respondió
+
+Configurable con la variable de entorno `GROQ_MODELS` (lista separada por comas sin espacios). Si no se define, se usa la lista por defecto de arriba.
 
 ---
 

@@ -33,6 +33,7 @@ const chatSessionSchema = new mongoose.Schema({
     role: { type: String, enum: ['user', 'assistant'], required: true },
     content: { type: String, required: true }
   }],
+  activeModel: { type: String },
   createdAt: { type: Date, default: Date.now },
   updatedAt: { type: Date, default: Date.now }
 });
