@@ -6,7 +6,7 @@ const { connectDB, ChatSession } = require('./mongo');
 const app = express();
 const PORT = process.env.PORT || 10000;
 const GROQ_API_KEY = process.env.GROQ_API_KEY;
-const TIMEOUT_MS = 30000;
+const TIMEOUT_MS = 20000;
 
 // Lista de modelos gratis con fallback automático
 const DEFAULT_MODELS = [
@@ -40,21 +40,18 @@ app.use((req, res, next) => {
   next();
 });
 
-// Validación de API key al inicio
+// Validación de configuración (sin matar el proceso en serverless)
 if (!GROQ_API_KEY) {
   console.error('ERROR: GROQ_API_KEY no está configurada en .env');
-  process.exit(1);
 }
 
 if (!GROQ_MODELS.length) {
   console.error('ERROR: GROQ_MODELS no contiene modelos válidos');
-  process.exit(1);
 }
 
-// Conectar a MongoDB
+// Conectar a MongoDB al arranque, pero sin crashear la función si falla
 connectDB().catch(err => {
-  console.error('ERROR: No se pudo conectar a MongoDB');
-  process.exit(1);
+  console.warn('WARN: MongoDB no conectado al arrancar:', err.message);
 });
 
 function isRetryableError(status, message) {
@@ -215,6 +212,38 @@ app.post('/chat', async (req, res) => {
     }
 
     console.log(`[REQUEST] Session: ${sessionId}, Message length: ${message.length} chars`);
+
+    // Guardas de configuración (responder 503 sin crashear la función)
+    if (!GROQ_API_KEY) {
+      return res.status(503).json({
+        success: false,
+        data: null,
+        error: 'API key de Groq no configurada en el servidor',
+        usage: null
+      });
+    }
+
+    if (!GROQ_MODELS.length) {
+      return res.status(503).json({
+        success: false,
+        data: null,
+        error: 'GROQ_MODELS no contiene modelos válidos',
+        usage: null
+      });
+    }
+
+    // Asegurar conexión a MongoDB bajo demanda (503 sin crashear si falla)
+    try {
+      await connectDB();
+    } catch (dbError) {
+      console.error('[DB] No disponible:', dbError.message);
+      return res.status(503).json({
+        success: false,
+        data: null,
+        error: 'Base de datos no disponible. Intenta de nuevo en unos segundos.',
+        usage: null
+      });
+    }
 
     // Buscar o crear sesión
     let session = await ChatSession.findById(sessionId);

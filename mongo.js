@@ -3,9 +3,20 @@ const mongoose = require('mongoose');
 const MONGO_URI = process.env.MONGO_URI;
 
 let isConnected = false;
+let connectPromise = null;
+
+// Evitar que eventos no manejados de la conexión crasheen la app/función serverless
+mongoose.connection.on('error', (err) => {
+  console.error('[MONGO] Error en la conexión:', err.message);
+});
+mongoose.connection.on('disconnected', () => {
+  isConnected = false;
+  console.warn('[MONGO] Desconectado de MongoDB');
+});
 
 async function connectDB() {
-  if (isConnected) {
+  if (mongoose.connection.readyState === 1) {
+    isConnected = true;
     return;
   }
 
@@ -13,17 +24,23 @@ async function connectDB() {
     throw new Error('MONGO_URI no está configurada en .env');
   }
 
-  try {
-    await mongoose.connect(MONGO_URI, {
+  // Compartir el intento de conexión entre invocaciones concurrentes
+  if (!connectPromise) {
+    connectPromise = mongoose.connect(MONGO_URI, {
       serverSelectionTimeoutMS: 5000,
       socketTimeoutMS: 45000,
+    }).then(() => {
+      isConnected = true;
+      console.log('✅ MongoDB conectado correctamente');
+    }).catch((error) => {
+      connectPromise = null;
+      isConnected = false;
+      console.error('❌ Error conectando a MongoDB:', error.message);
+      throw error;
     });
-    isConnected = true;
-    console.log('✅ MongoDB conectado correctamente');
-  } catch (error) {
-    console.error('❌ Error conectando a MongoDB:', error.message);
-    throw error;
   }
+
+  return connectPromise;
 }
 
 // Schema de sesión de chat
